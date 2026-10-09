@@ -532,7 +532,9 @@ imageSync:
     pullSecretName: component-sync-pull-secret
   outboundServiceTags: ""
 infrastructureIdentities:
+  managementAksIdentityNames: ""
   managementResourceGroups: ""
+  serviceAksIdentityName: ""
   serviceResourceGroup: ""
   useLeased: false
 keyVaultDNSSuffix: vault.azure.net
