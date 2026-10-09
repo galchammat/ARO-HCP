@@ -43,9 +43,11 @@ import (
 	customlinktools "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/custom-link-tools"
 	gatherobservability "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/gather-observability"
 	gathersnapshot "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/gather-snapshot"
+	"github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/infra"
 	mergegate "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/merge-gate"
 	slotmanager "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/slot-manager"
 	"github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/visualize"
+	"github.com/Azure/ARO-HCP/test/pkg/leaseenv"
 	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/labels"
 )
@@ -115,15 +117,15 @@ func parseMIContainersLabel(spec *et.ExtensionTestSpec) (int, bool) {
 // space-delimited entries in LEASED_MSI_CONTAINERS, or
 // DefaultMIContainerCount when the envvar is unset or empty.
 func parseMIContainerCount() (int, string) {
-	v := os.Getenv(framework.LeasedMSIContainersEnvvar)
+	v := os.Getenv(leaseenv.MSIContainers)
 	if v == "" {
-		return DefaultMIContainerCount, fmt.Sprintf("default (%s not set)", framework.LeasedMSIContainersEnvvar)
+		return DefaultMIContainerCount, fmt.Sprintf("default (%s not set)", leaseenv.MSIContainers)
 	}
 	count := len(strings.Fields(v))
 	if count == 0 {
-		return DefaultMIContainerCount, fmt.Sprintf("default (%s empty)", framework.LeasedMSIContainersEnvvar)
+		return DefaultMIContainerCount, fmt.Sprintf("default (%s empty)", leaseenv.MSIContainers)
 	}
-	return count, framework.LeasedMSIContainersEnvvar
+	return count, leaseenv.MSIContainers
 }
 
 // ev2FailedTestsKey and ev2AllowRetryTestsKey are the finished.json metadata keys
@@ -422,12 +424,16 @@ func ensureMISchedulerConfigured() {
 }
 
 func wrapMISchedulerPreRun(cmd *cobra.Command) {
-	existingPreRun := cmd.PersistentPreRun
-	cmd.PersistentPreRun = func(c *cobra.Command, args []string) {
+	existingPreRunE, existingPreRun := cmd.PersistentPreRunE, cmd.PersistentPreRun
+	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
 		ensureMISchedulerConfigured()
+		if existingPreRunE != nil {
+			return existingPreRunE(c, args)
+		}
 		if existingPreRun != nil {
 			existingPreRun(c, args)
 		}
+		return nil
 	}
 }
 
@@ -456,8 +462,8 @@ func isUpgradeInPlaceSuiteInvocation() bool {
 	return false
 }
 
-// Builds the test CLI with environment-specific suite defaults and resource budgets.
-func setupCli() *cobra.Command {
+// initializeExtension loads suite defaults and specs only for registry consumers.
+func initializeExtension(registry *e.Registry) {
 	configureGomegaFormatting()
 
 	parallelismOverride := parseSuiteParallelismOverride()
@@ -468,7 +474,7 @@ func setupCli() *cobra.Command {
 		return defaultValue
 	}
 	integrationParallelism := 24
-	if strings.EqualFold(os.Getenv("ARO_HCP_DEPLOY_ENV"), "int") && strings.EqualFold(os.Getenv("LOCATION"), "westus3") {
+	if strings.EqualFold(os.Getenv(leaseenv.RuntimeDeployEnvironment), "int") && strings.EqualFold(os.Getenv("LOCATION"), "westus3") {
 		integrationParallelism = 75
 	}
 
@@ -482,9 +488,6 @@ func setupCli() *cobra.Command {
 	if pooledIdentitiesEnabled {
 		miPools = map[string]int{"mi-containers": containerCount}
 	}
-
-	// Extension registry
-	registry := e.NewRegistry()
 
 	// You can declare multiple extensions, but most people will probably only need to create one.
 	ext := e.NewExtension("aro-hcp", "payload", "cuj-e2e-tests")
@@ -783,8 +786,43 @@ func setupCli() *cobra.Command {
 		containerCount:          containerCount,
 		containerCountSource:    containerCountSource,
 	})
+}
+
+// wrapExtensionInitialization preserves Cobra's persistent-hook inheritance:
+// descendants without a hook inherit this one, while descendants overriding it
+// initialize before their own hook. Local pre-run and execution hooks are untouched.
+func wrapExtensionInitialization(command *cobra.Command, initialize func()) {
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		if c == command || c.PersistentPreRunE != nil || c.PersistentPreRun != nil {
+			preRunE, preRun := c.PersistentPreRunE, c.PersistentPreRun
+			c.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+				initialize()
+				if preRunE != nil {
+					return preRunE(cmd, args)
+				}
+				if preRun != nil {
+					preRun(cmd, args)
+				}
+				return nil
+			}
+		}
+		for _, child := range c.Commands() {
+			walk(child)
+		}
+	}
+	walk(command)
+}
+
+// setupCli builds one command tree without loading suites or their environment.
+func setupCli() *cobra.Command {
+	registry := e.NewRegistry()
+	initialize := sync.OnceFunc(func() {
+		initializeExtension(registry)
+	})
 
 	root := &cobra.Command{
+		Use:  "aro-hcp-tests",
 		Long: "ARO-HCP E2E Tests",
 	}
 
@@ -794,6 +832,7 @@ func setupCli() *cobra.Command {
 		case "run-suite", "run-test":
 			wrapMISchedulerPreRun(c)
 		}
+		wrapExtensionInitialization(c, initialize)
 	}
 	root.AddCommand(extensionCmds...)
 	root.AddCommand(cleanup.NewCommand())
@@ -803,6 +842,7 @@ func setupCli() *cobra.Command {
 	root.AddCommand(metadataapi.Must(gatherobservability.NewCommand()))
 	root.AddCommand(metadataapi.Must(gathersnapshot.NewCommand()))
 	root.AddCommand(metadataapi.Must(slotmanager.NewCommand()))
+	root.AddCommand(infra.NewCommand())
 	return root
 }
 

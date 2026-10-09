@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -28,7 +29,9 @@ import (
 	e "github.com/openshift-eng/openshift-tests-extension/pkg/extension"
 	et "github.com/openshift-eng/openshift-tests-extension/pkg/extension/extensiontests"
 	"github.com/openshift-eng/openshift-tests-extension/pkg/util/sets"
+	"github.com/spf13/cobra"
 
+	"github.com/Azure/ARO-HCP/test/pkg/leaseenv"
 	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/testutil"
 )
@@ -367,12 +370,12 @@ func TestSuiteParallelismDefaultsAndOverrides(t *testing.T) {
 		return byName
 	}
 
-	t.Setenv("ARO_HCP_DEPLOY_ENV", "")
+	t.Setenv(leaseenv.RuntimeDeployEnvironment, "")
 	t.Setenv("LOCATION", "")
 	t.Setenv("ARO_HCP_SUITE_PARALLELISM", "")
 	t.Setenv(framework.UsePooledIdentitiesEnvvar, "true")
 	// The scheduler budget comes from the leased inventory, not worker parallelism.
-	t.Setenv(framework.LeasedMSIContainersEnvvar, strings.TrimSpace(strings.Repeat("container ", 70)))
+	t.Setenv(leaseenv.MSIContainers, strings.TrimSpace(strings.Repeat("container ", 70)))
 	baseline := listSuites(t)
 	upgradeDefault, ok := baseline["upgrade/in-place"]
 	if !ok {
@@ -405,7 +408,7 @@ func TestSuiteParallelismDefaultsAndOverrides(t *testing.T) {
 		{name: "invalid override outside target", environment: "int", location: "uksouth", override: "invalid", want: 24, wantWarning: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("ARO_HCP_DEPLOY_ENV", tc.environment)
+			t.Setenv(leaseenv.RuntimeDeployEnvironment, tc.environment)
 			t.Setenv("LOCATION", tc.location)
 			t.Setenv("ARO_HCP_SUITE_PARALLELISM", tc.override)
 			var suites map[string]e.Suite
@@ -630,4 +633,141 @@ func readMetadataFile(t *testing.T, dir string) map[string]interface{} {
 		t.Fatalf("failed to parse %s: %v", ev2RetryMetadataFile, err)
 	}
 	return got
+}
+
+func TestRegistryCommandsInitializeLazilyOncePerRoot(t *testing.T) {
+	for _, tc := range []struct {
+		args      []string
+		wantError string
+		scheduler bool
+	}{
+		{args: []string{"list", "--output", "names"}},
+		{args: []string{"list", "tests", "--output", "names"}},
+		{args: []string{"list", "suites", "--output", "names"}},
+		{args: []string{"list", "components"}},
+		{args: []string{"info"}},
+		{args: []string{"images"}},
+		{args: []string{"update"}},
+		{args: []string{"run-suite"}, wantError: "must specify one suite name", scheduler: true},
+		{args: []string{"run-test", "one", "two"}, wantError: "use --names to specify more than one test", scheduler: true},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			t.Setenv("ARO_HCP_SUITE_PARALLELISM", "")
+			t.Setenv(framework.UsePooledIdentitiesEnvvar, "true")
+			t.Setenv(leaseenv.MSIContainers, "container-a container-b")
+			originalSpecs, originalSetup := miSchedulerSpecs, miSchedulerSetup
+			miSchedulerConfigure = sync.Once{}
+			t.Cleanup(func() {
+				miSchedulerSpecs, miSchedulerSetup = originalSpecs, originalSetup
+				miSchedulerConfigure = sync.Once{}
+			})
+
+			// Setting the override after construction proves it is consumed at
+			// execution, not captured while constructing this root's commands.
+			root := setupCli()
+			t.Setenv("ARO_HCP_SUITE_PARALLELISM", "invalid")
+			stdout, err := os.CreateTemp(t.TempDir(), "stdout-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdout.Close()
+			originalStdout := os.Stdout
+			os.Stdout = stdout
+			defer func() { os.Stdout = originalStdout }()
+			root.SetOut(stdout)
+			root.SetErr(stdout)
+
+			stderr := captureStderr(t, func() {
+				for range 2 {
+					root.SetArgs(tc.args)
+					err := root.Execute()
+					if tc.wantError == "" {
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+						t.Fatalf("got error %v, want %q", err, tc.wantError)
+					}
+				}
+			})
+			if count := strings.Count(stderr, "WARNING: ARO_HCP_SUITE_PARALLELISM="); count != 1 {
+				t.Fatalf("expected one suite initialization per root, got %d: %s", count, stderr)
+			}
+			if tc.scheduler {
+				if strings.Count(stderr, "[scheduler]") != 1 || len(miSchedulerSpecs) == 0 {
+					t.Fatalf("scheduler did not configure populated specs exactly once: %s", stderr)
+				}
+				foundDemand := false
+				for _, spec := range miSchedulerSpecs {
+					if spec.Resources.ResourcePools["mi-containers"] > 0 {
+						foundDemand = true
+						break
+					}
+				}
+				if !foundDemand {
+					t.Fatal("scheduler ran before extension specs were initialized")
+				}
+			} else if strings.Contains(stderr, "[scheduler]") {
+				t.Fatalf("non-run command configured the scheduler: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestExtensionInitializationPreservesExecutionHooks(t *testing.T) {
+	for _, hook := range []string{"inherited", "persistent", "persistent-error", "local-error"} {
+		t.Run(hook, func(t *testing.T) {
+			var calls []string
+			record := func(name string) { calls = append(calls, name) }
+			hookError := errors.New("hook failed")
+			parent := &cobra.Command{
+				Use: "extension",
+				PersistentPreRun: func(*cobra.Command, []string) {
+					record("parent")
+				},
+			}
+			child := &cobra.Command{
+				Use: "child",
+				PreRun: func(*cobra.Command, []string) {
+					record("local")
+				},
+				Run: func(*cobra.Command, []string) {
+					record("run")
+				},
+			}
+			want := "initialize,parent,local,run"
+			wantError := false
+			switch hook {
+			case "persistent":
+				child.PersistentPreRun = func(*cobra.Command, []string) { record("child") }
+				want = "initialize,child,local,run"
+			case "persistent-error":
+				child.PersistentPreRun = func(*cobra.Command, []string) { t.Fatal("non-error hook must not run") }
+				child.PersistentPreRunE = func(*cobra.Command, []string) error {
+					record("child")
+					return hookError
+				}
+				want, wantError = "initialize,child", true
+			case "local-error":
+				child.PreRunE = func(*cobra.Command, []string) error {
+					record("local-error")
+					return hookError
+				}
+				want, wantError = "initialize,parent,local-error", true
+			}
+			parent.AddCommand(child)
+			wrapExtensionInitialization(parent, sync.OnceFunc(func() { record("initialize") }))
+			root := &cobra.Command{Use: "root", SilenceUsage: true, SilenceErrors: true}
+			root.AddCommand(parent)
+			root.SetArgs([]string{"extension", "child"})
+			err := root.Execute()
+			if wantError && !errors.Is(err, hookError) || !wantError && err != nil {
+				t.Fatalf("unexpected execution error: %v", err)
+			}
+			if got := strings.Join(calls, ","); got != want {
+				t.Fatalf("execution order = %q, want %q", got, want)
+			}
+		})
+	}
 }
