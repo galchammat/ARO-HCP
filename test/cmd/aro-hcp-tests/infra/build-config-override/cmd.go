@@ -61,6 +61,8 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) {
 	flags.StringVar(&opts.MSIMockCatalog, "msi-mock-pool-catalog", opts.MSIMockCatalog, "MSI mock catalog (default source-dir/dev-infrastructure/openshift-ci/msi-mock-pool.yaml)")
 	flags.StringVar(&opts.ARMHelperCatalog, "arm-helper-pool-catalog", opts.ARMHelperCatalog, "ARM helper catalog (default source-dir/dev-infrastructure/openshift-ci/arm-helper-pool.yaml)")
 	flags.StringVar(&opts.HypershiftOverlay, "hypershift-override-file", opts.HypershiftOverlay, "Hypershift overlay (default shared-dir/hypershift-image-overrides.yaml)")
+	flags.StringVar(&opts.DevSettings, "dev-settings-file", opts.DevSettings, "Templatize dev settings that identify per-run environments (default source-dir/"+configoverride.DefaultDevSettingsFile+")")
+	flags.StringVar(&opts.ServiceConfig, "service-config-file", opts.ServiceConfig, "Service configuration with the base AKS tags (default source-dir/"+configoverride.DefaultServiceConfigFile+")")
 }
 
 type RawOptions struct {
@@ -71,6 +73,8 @@ type RawOptions struct {
 	MSIMockCatalog    string
 	ARMHelperCatalog  string
 	HypershiftOverlay string
+	DevSettings       string
+	ServiceConfig     string
 	Environ           []string
 	Out               io.Writer
 }
@@ -157,6 +161,8 @@ func (o *ValidatedOptions) Complete(_ context.Context) (*Options, error) {
 				MSIMockCatalog:    sourcePath(o.SourceDir, msiMockCatalog),
 				ARMHelperCatalog:  sourcePath(o.SourceDir, armHelperCatalog),
 				HypershiftOverlay: hypershiftOverlay,
+				DevSettings:       sourcePath(o.SourceDir, defaultPath(o.DevSettings, configoverride.DefaultDevSettingsFile)),
+				ServiceConfig:     sourcePath(o.SourceDir, defaultPath(o.ServiceConfig, configoverride.DefaultServiceConfigFile)),
 			},
 			outputFile: outputFile,
 			out:        o.Out,
@@ -181,4 +187,11 @@ func sourcePath(sourceDir, path string) string {
 		return path
 	}
 	return filepath.Join(sourceDir, path)
+}
+
+func defaultPath(path, fallback string) string {
+	if path == "" {
+		return fallback
+	}
+	return path
 }

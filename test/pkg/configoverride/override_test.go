@@ -150,13 +150,14 @@ func TestRecognizedEnvironmentInputs(t *testing.T) {
 		"LEASED_MSI_CONTAINERS=container-one container-two",
 		"LEASED_INFRASTRUCTURE_IDENTITY_BUNDLE={\"literal\":\"a=b\"}",
 		"USE_OC_LOGIN_REGISTRIES= existing.registry ", "BACKEND_IMAGE=",
-		"UNRELATED=value", "IMAGE_FORMAT=ignored",
+		"UNRELATED=value", "IMAGE_FORMAT=ignored", "BUILD_ID=2110699886142820352",
 	})
 	want := Inputs{
 		DeployEnvironment: "overlay-env", MSIMockLease: "mock",
 		ARMHelperLeases: []string{"one", "two"}, MSIContainers: "container-one container-two",
 		InfrastructureIdentityBundle: `{"literal":"a=b"}`,
 		OCLoginRegistries:            " existing.registry ", Images: map[string]string{"BACKEND_IMAGE": ""},
+		BuildID: "2110699886142820352",
 	}
 	if err != nil || !reflect.DeepEqual(input, want) {
 		t.Fatalf("InputsFromEnvironment = %#v, %v; want %#v", input, err, want)

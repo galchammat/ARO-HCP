@@ -40,12 +40,15 @@ type Inputs struct {
 	ARMHelperLeases              []string
 	MSIContainers                string
 	InfrastructureIdentityBundle string
+	BuildID                      string
 }
 
 type Paths struct {
 	MSIMockCatalog    string
 	ARMHelperCatalog  string
 	HypershiftOverlay string
+	DevSettings       string
+	ServiceConfig     string
 }
 
 type Result struct {
@@ -91,6 +94,8 @@ func InputsFromEnvironment(environ []string) (Inputs, error) {
 			input.InfrastructureIdentityBundle = value
 		case "USE_OC_LOGIN_REGISTRIES":
 			input.OCLoginRegistries = value
+		case "BUILD_ID":
+			input.BuildID = value
 		default:
 			if strings.HasSuffix(name, "_IMAGE") {
 				input.Images[name] = value
@@ -154,7 +159,8 @@ func applyImageOverrides(defaults map[string]interface{}, images map[string]stri
 	return registries, nil
 }
 
-// Generate validates inputs and reads only the catalogs needed for selected leases.
+// Generate validates inputs and reads only the catalogs needed for selected leases,
+// plus the dev settings and service configuration when BUILD_ID is set.
 // It does not write files or modify the process environment.
 func Generate(input Inputs, paths Paths) (Result, error) {
 	if err := validateImageKeys(input.Images); err != nil {
@@ -221,6 +227,21 @@ func Generate(input Inputs, paths Paths) (Result, error) {
 		defaults["mgmt"] = map[string]interface{}{"aks": map[string]interface{}{
 			"userAgentPool": map[string]interface{}{"minCount": 1},
 		}}
+	}
+	runTag, tagged, err := RunCostTag(paths.DevSettings, input.DeployEnvironment, input.BuildID)
+	if err != nil {
+		return Result{}, err
+	}
+	if tagged {
+		aksTags, err := runAKSTags(paths.ServiceConfig, input.DeployEnvironment, runTag)
+		if err != nil {
+			return Result{}, err
+		}
+		for kind, tags := range aksTags {
+			mergeMaps(defaults, map[string]interface{}{kind: map[string]interface{}{
+				"aks": map[string]interface{}{"tags": tags},
+			}})
+		}
 	}
 
 	root := map[string]interface{}{}

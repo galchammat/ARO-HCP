@@ -34,9 +34,13 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v6"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
+
+	"github.com/Azure/ARO-HCP/test/pkg/configoverride"
 )
 
-const ProwJobIDTag = "jobID.aro-hcp-ci.redhat.com"
+// ProwJobIDTag is shared with CI provisioning, which tags the job's infrastructure
+// resource groups, so one Cost Management filter covers the whole job.
+const ProwJobIDTag = configoverride.RunCostTagKey
 
 func GetSubscriptionID(ctx context.Context, subscriptionClient *armsubscriptions.Client, subscriptionName string) (string, error) {
 	pager := subscriptionClient.NewListPager(nil)

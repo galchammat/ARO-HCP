@@ -44,6 +44,13 @@ EXTRA_ARGS="--region ${LOCATION}"
 if [[ "${ARO_HCP_PROVISION_ABORT_IF_EXISTS:-true}" == "true" ]]; then
   EXTRA_ARGS+=" --abort-if-regional-exist"
 fi
+# Tag the resource groups this run creates with its Prow job ID for cost
+# attribution. Empty for environments that outlive a single job, and never
+# applied to pre-existing shared resource groups.
+RUN_COST_TAG=$("${ARO_HCP_TESTS_BINARY:-${PWD}/test/aro-hcp-tests}" infra run-cost-tag --source-dir "${PWD}" --deploy-env "${DEPLOY_ENV}")
+if [[ -n "${RUN_COST_TAG}" ]]; then
+  EXTRA_ARGS+=" --new-resource-group-tags=${RUN_COST_TAG}"
+fi
 
 STEP_NAME="${PROVISION_STEP_NAME:-entrypoint}"
 STEP_NAME="${STEP_NAME//[^a-zA-Z0-9_-]/}"

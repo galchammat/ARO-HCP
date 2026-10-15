@@ -30,10 +30,12 @@ func TestOfflineCommandsSkipSuiteSetup(t *testing.T) {
 		{"--help"},
 		{"help"},
 		{"infra", "build-config-override"},
+		{"infra", "run-cost-tag"},
 		{"infra", "--help"},
 		{"help", "infra"},
 		{"--help", "infra"},
 		{"infra", "build-config-override", "--help"},
+		{"infra", "run-cost-tag", "--help"},
 		{"help", "infra", "build-config-override"},
 		{"list", "--help"},
 		{"list", "suites", "--help"},
@@ -48,7 +50,7 @@ func TestOfflineCommandsSkipSuiteSetup(t *testing.T) {
 				"LEASED_MSI_MOCK_SP", "LEASED_ARM_HELPER_SP", "LEASED_INFRASTRUCTURE_IDENTITY_BUNDLE",
 				"BACKEND_IMAGE", "FRONTEND_IMAGE", "ADMIN_API_IMAGE", "SESSIONGATE_IMAGE", "HCP_RECOVERY_IMAGE",
 				"FLEET_IMAGE", "MGMT_AGENT_IMAGE", "SWIFT_RECORDER_IMAGE", "KUBE_APPLIER_IMAGE", "EXPORTER_IMAGE",
-				"USE_OC_LOGIN_REGISTRIES",
+				"USE_OC_LOGIN_REGISTRIES", "BUILD_ID",
 			} {
 				t.Setenv(key, "")
 			}

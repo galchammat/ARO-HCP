@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	buildconfigoverride "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/infra/build-config-override"
+	runcosttag "github.com/Azure/ARO-HCP/test/cmd/aro-hcp-tests/infra/run-cost-tag"
 )
 
 // NewCommand provides offline infrastructure configuration utilities.
@@ -28,5 +29,6 @@ func NewCommand() *cobra.Command {
 		SilenceUsage: true,
 	}
 	command.AddCommand(buildconfigoverride.NewCommand())
+	command.AddCommand(runcosttag.NewCommand())
 	return command
 }
