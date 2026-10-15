@@ -26,10 +26,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	e "github.com/openshift-eng/openshift-tests-extension/pkg/extension"
 	et "github.com/openshift-eng/openshift-tests-extension/pkg/extension/extensiontests"
 	"github.com/openshift-eng/openshift-tests-extension/pkg/util/sets"
-	"github.com/spf13/cobra"
 
 	"github.com/Azure/ARO-HCP/test/pkg/leaseenv"
 	"github.com/Azure/ARO-HCP/test/util/framework"
