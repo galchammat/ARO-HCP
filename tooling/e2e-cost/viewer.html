@@ -8,6 +8,8 @@
 {{.CSS}}
 .site{display:flex;min-height:100vh}.site-nav{flex:0 0 232px;box-sizing:border-box;position:sticky;top:0;height:100vh;overflow-y:auto;background:var(--paper);border-right:1px solid var(--line);padding:24px 14px;font-size:13px}.site-nav>a{display:block;font-weight:700;color:var(--ink);text-decoration:none;margin:0 6px 14px}.site-nav ol{list-style:none;margin:0;padding:0}.site-nav li a{display:flex;justify-content:space-between;gap:8px;padding:6px;border-radius:4px;color:var(--ink);text-decoration:none}.site-nav li a:hover{background:#eef3f4}.site-nav li a[aria-current]{background:#e2eef0;font-weight:650}.site-nav small{font-variant-numeric:tabular-nums}.site-main{flex:1;min-width:0}
 @media(max-width:900px){.site{display:block}.site-nav{position:static;height:auto;max-height:40vh;border-right:0;border-bottom:1px solid var(--line)}}
+.costs-controls{display:flex;align-items:center;gap:12px 20px;flex-wrap:wrap;margin:0 0 14px}.segmented{display:inline-flex;border:1px solid #8a9ca4;border-radius:4px;overflow:hidden}.segmented button{border:0;background:var(--paper);padding:7px 14px;font:inherit;cursor:pointer;color:var(--ink)}.segmented button+button{border-left:1px solid #8a9ca4}.segmented button[aria-pressed=true]{background:#e2eef0;font-weight:650}.costs-controls select{font:inherit;padding:7px 10px;border:1px solid #8a9ca4;border-radius:4px;background:var(--paper);color:var(--ink)}.costs-chart{height:360px;width:100%}.pill{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:650;color:#fff}.pill.good{background:#2f7d46}.pill.warning{background:#a85d00}.pill.bad{background:#b3261e}.pill.unknown{background:#6b7280}.coverage{margin:16px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:4px;background:#f8fafb}.coverage p{margin:0 0 8px}.meter{height:8px;background:#e3e8ea;border-radius:4px;overflow:hidden}.meter>span{display:block;height:100%;background:var(--accent)}.coverage small{display:block;margin-top:8px}
+@media(max-width:640px){.costs-chart{height:300px}}
 </style>
 </head>
 <body><div class="site">
@@ -27,6 +29,13 @@
   const safeURL = value => /^https:\/\//i.test(value || "") ? value : "";
   const usd = value => "$" + Number(value || 0).toFixed(4);
   const usd2 = value => "$" + Number(value || 0).toFixed(2);
+  // usdCompact rounds for chart labels and headlines: $12k, $1.2M.
+  const usdCompact = value => {
+    const v = Number(value || 0);
+    if (Math.abs(v) >= 1000000) return "$" + (v / 1000000).toFixed(1) + "M";
+    if (Math.abs(v) >= 1000) return "$" + Math.round(v / 1000) + "k";
+    return "$" + Math.round(v);
+  };
   const known = value => value || "Unknown";
   const utc = value => !value || value.startsWith("0001-") ? "Unavailable" : value.replace("T", " ").replace(/(\.\d+)?Z$/, "") + " UTC";
   const clock = value => !value || value.startsWith("0001-") ? "Unavailable" : value.slice(11, 16) + " UTC";
@@ -68,14 +77,209 @@
     }
   };
 
-  const renderHome = manifest => {
-    document.title = "E2E cost reports";
+  // costPeriodLabel shortens a chart period for the x axis.
+  const costPeriodLabel = (granularity, period) => {
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const parts = String(period).split("-");
+    if (granularity === "daily") return parts[1] + "-" + parts[2];
+    return months[Number(parts[1]) - 1] + " '" + parts[0].slice(2);
+  };
+
+  // costsSummary leads with the projected month, the reference it is judged
+  // against, and the trailing average.
+  const costsSummary = costs => {
+    const o = costs.overview || {};
+    const budget = Number(costs.budgetUSD || 0);
+    const ratio = Number(o.projectionRatio || 0);
+    const statusLabel = {good: "On track", warning: "Close to budget", bad: "Over budget", unknown: "No reference"}[o.status] || "No reference";
+    let comparison = "";
+    if (o.status && o.status !== "unknown") {
+      comparison = (ratio > 0 ? (ratio * 100).toFixed(1) + "% over" : (-ratio * 100).toFixed(1) + "% under") +
+        (budget > 0 ? " budget" : " the trailing average");
+    }
+    const month = new Date(costs.month + "-01T00:00:00Z").toLocaleString("en-US", {month: "long", year: "numeric", timeZone: "UTC"});
+    return '<section class="panel" aria-label="Projected month"><h2>Projected ' + esc(month) + '</h2><div class="summary">' +
+      '<div class="metric"><span>Projected month</span><strong>' + usdCompact(o.projectedUSD) + '</strong>' +
+        '<span class="pill ' + esc(o.status || "unknown") + '">' + esc(statusLabel) + '</span>' +
+        (comparison ? ' <small class="muted">' + esc(comparison) + '</small>' : '') + '</div>' +
+      '<div class="metric"><span>Month to date</span><strong>' + usdCompact(o.monthToDateUSD) + '</strong><small class="muted">' + usd2(o.monthToDateUSD) + '</small></div>' +
+      '<div class="metric"><span>Projected, rest of month</span><strong>' + usdCompact(o.projectedRemainingUSD) + '</strong></div>' +
+      (budget > 0 ? '<div class="metric"><span>Monthly budget</span><strong>' + usdCompact(budget) + '</strong></div>' : '') +
+      (o.trailingAverageMonths ? '<div class="metric"><span>' + esc(o.trailingAverageMonths) + '-month average</span><strong>' + usdCompact(o.trailingAverageUSD) + '</strong></div>' : '') +
+      '</div>' + (o.projectionDays && o.remainingDays
+        ? '<p class="muted" style="margin-top:12px">The rest of ' + esc(month) + ' is projected at ' + usdCompact(o.averageDailyUSD) +
+          ' a day, the average of the last ' + esc(o.projectionDays) + ' complete days, times the ' + esc(o.remainingDays) +
+          (Number(o.remainingDays) === 1 ? ' day left in the month.' : ' days left in the month.') + '</p>'
+        : '') + '</section>';
+  };
+
+  // costsChartPanel holds the chart and its controls; initCosts fills it in.
+  const costsChartPanel = costs => {
+    const options = (costs.groupings || []).map(g => '<option value="' + esc(g.value) + '">' + esc(g.label) + '</option>').join("");
+    return '<section class="panel" aria-label="Monthly and daily spend">' +
+      '<h2>Azure spend, all charted subscriptions</h2>' +
+      '<div class="costs-controls"><div class="segmented" role="group" aria-label="Granularity">' +
+      '<button type="button" data-granularity="monthly" aria-pressed="true">Monthly</button>' +
+      '<button type="button" data-granularity="daily" aria-pressed="false">Daily</button></div>' +
+      '<label for="costs-stack" style="margin:0">Stack by</label>' +
+      '<select id="costs-stack">' + options + '</select></div>' +
+      '<div id="costs-chart" class="costs-chart" role="img" aria-label="Stacked bars of amortized Azure cost with the projected rest of the current month and reference lines; every figure is also in the tooltip"></div>' +
+      '<p class="muted">Amortized USD from Azure Cost Management, not the per-run attribution below. The pale segment projects the unbilled rest of the month from the trailing daily average. Dashed lines mark the budget and the trailing average.</p>' +
+      (costs.incomplete ? '<p class="badge">Known subtotal: some subscriptions could not be queried</p>' : '') +
+      '</section>';
+  };
+
+  // costsCoverage compares the day views' attributed cost with the total spend
+  // on the same day, which comes from the daily series. Per-run billing windows
+  // overlap, so the denominator must be the daily total, never a sum of runs.
+  const costsCoverage = (costs, manifest) => {
+    const chart = (costs.charts || {}).daily && costs.charts.daily.subscription;
+    if (!chart) return "";
+    const totals = new Map();
+    for (const series of chart.series || []) {
+      (series.values || []).forEach((value, index) => {
+        const period = chart.periods[index];
+        totals.set(period, (totals.get(period) || 0) + Number(value || 0));
+      });
+    }
+    const entry = (manifest.days || []).find(d => (totals.get(d.day) || 0) > 0 && d.netUSD > 0);
+    if (!entry) return "";
+    const total = totals.get(entry.day);
+    const share = Math.max(0, Math.min(100, (entry.netUSD / total) * 100));
+    return '<div class="coverage"><p><strong>' + esc(share.toFixed(0)) + '% of ' + esc(entry.day) + ' spend is attributed to runs</strong> — ' +
+      usdCompact(entry.netUSD) + ' of ' + usdCompact(total) + '.</p>' +
+      '<div class="meter" role="img" aria-label="' + esc(share.toFixed(0)) + ' percent of the day attributed"><span style="width:' + esc(share.toFixed(1)) + '%"></span></div>' +
+      '<small>Attribution covers the resource groups a run provisions; shared infrastructure, persistent environments, and unmatched resources stay in the total. ' +
+      esc(entry.incomplete) + ' of ' + esc(entry.runs) + ' runs are known subtotals, so this share is a floor.</small></div>';
+  };
+
+  const costsDiagnostics = costs => {
+    const errors = (costs.diagnostics || []).filter(d => d.severity === "error");
+    if (!errors.length) return "";
+    return '<section class="panel warning" aria-label="Cost collection diagnostics"><h2>Cost collection diagnostics</h2><ul class="diagnostics">' +
+      errors.map(d => '<li><strong>' + esc(d.code) + '</strong> [' + esc(d.scope) + ']: ' + esc(d.message) + '</li>').join("") + '</ul></section>';
+  };
+
+  // initCosts draws the selected chart. Both granularities and all stack-by
+  // groupings are precomputed in costs.json, so switching never refetches.
+  const initCosts = (costs, manifest) => {
+    const host = document.getElementById("costs-chart");
+    const select = document.getElementById("costs-stack");
+    const buttons = [...document.querySelectorAll("[data-granularity]")];
+    if (!host || !select || !window.echarts) return;
+    const palette = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#86bcb6"];
+    // projectionSeries labels the stacked segment for the rest of the month.
+    const projectionSeries = "Projected";
+    const chart = echarts.init(host, null, {renderer: "canvas"});
+    const stackOptions = new URLSearchParams(location.search);
+    let granularity = stackOptions.get("granularity") === "daily" ? "daily" : "monthly";
+    let grouping = (costs.groupings || []).some(g => g.value === stackOptions.get("stack")) ? stackOptions.get("stack") : "subscription";
+
+    const draw = () => {
+      const data = (costs.charts[granularity] || {})[grouping];
+      if (!data) return;
+      const labels = data.periods.map(p => costPeriodLabel(granularity, p));
+      const series = data.series.map((entry, index) => ({
+        name: entry.name,
+        type: "bar",
+        stack: "cost",
+        barCategoryGap: granularity === "daily" ? "20%" : "35%",
+        itemStyle: {color: entry.other ? "#9ca3af" : palette[index % palette.length]},
+        emphasis: {focus: "series"},
+        data: entry.values.map(v => Math.round(v * 100) / 100)
+      }));
+      const references = data.references || [];
+      const referenceMax = references.reduce((max, r) => Math.max(max, r.valueUSD), 0);
+      // The projection series is named after the constant so the tooltip can
+      // separate it from the billed series by name.
+      series.push({
+        name: projectionSeries,
+        type: "bar",
+        stack: "cost",
+        itemStyle: {color: "rgba(148,163,184,0.35)", borderColor: "#94a3b8", borderWidth: 1},
+        data: (data.projectedUSD || []).map(v => v > 0 ? Math.round(v * 100) / 100 : "-"),
+        markLine: references.length ? {
+          symbol: ["none", "none"],
+          silent: true,
+          data: references.map(r => ({
+            yAxis: Math.round(r.valueUSD),
+            name: r.label,
+            lineStyle: {color: r.kind === "budget" ? "#ef4444" : "#f59e0b", type: "dashed", width: 1},
+            label: {
+              show: true,
+              position: r.kind === "budget" ? "insideEndTop" : "insideStartTop",
+              color: "#fff",
+              backgroundColor: r.kind === "budget" ? "#ef4444" : "#f59e0b",
+              borderRadius: 3,
+              fontSize: 11,
+              fontWeight: "bold",
+              formatter: " " + r.label + " "
+            }
+          }))
+        } : undefined
+      });
+      chart.setOption({
+        animation: false,
+        grid: {left: 8, right: 16, top: 18, bottom: 8, containLabel: true},
+        tooltip: {
+          trigger: "axis",
+          axisPointer: {type: "shadow"},
+          formatter: items => {
+            const rows = [];
+            let actual = 0, projected = 0;
+            for (const item of items) {
+              const value = Number(item.value) || 0;
+              if (!value) continue;
+              if (item.seriesName === projectionSeries) { projected += value; continue; }
+              actual += value;
+              rows.push({marker: item.marker, name: item.seriesName, value});
+            }
+            rows.sort((a, b) => b.value - a.value);
+            let html = "<b>" + esc(items[0].axisValue) + "</b>";
+            for (const row of rows) html += "<br/>" + row.marker + esc(row.name) + ": " + usdCompact(row.value);
+            html += "<br/><b>Actual: " + usdCompact(actual) + "</b>";
+            if (projected > 0) html += "<br/>" + esc(projectionSeries) + ": " + usdCompact(projected) + "<br/><b>Projected: " + usdCompact(actual + projected) + "</b>";
+            return html;
+          }
+        },
+        xAxis: {type: "category", data: labels, axisLabel: {hideOverlap: true, color: "#536872"}},
+        yAxis: {
+          type: "value",
+          splitNumber: 3,
+          max: value => Math.max(value.max, referenceMax) * 1.08,
+          axisLabel: {showMaxLabel: false, color: "#536872", formatter: usdCompact},
+          splitLine: {lineStyle: {color: "rgba(113,113,122,0.2)"}}
+        },
+        series
+      }, true);
+      for (const button of buttons) button.setAttribute("aria-pressed", String(button.dataset.granularity === granularity));
+      select.value = grouping;
+      const query = new URLSearchParams();
+      if (granularity !== "monthly") query.set("granularity", granularity);
+      if (grouping !== "subscription") query.set("stack", grouping);
+      const suffix = query.toString();
+      history.replaceState(null, "", suffix ? "?" + suffix : location.pathname);
+    };
+
+    for (const button of buttons) button.addEventListener("click", () => { granularity = button.dataset.granularity; draw(); });
+    select.addEventListener("change", () => { grouping = select.value; draw(); });
+    window.addEventListener("resize", () => chart.resize());
+    draw();
+  };
+
+  const renderHome = (manifest, costs) => {
     const days = manifest.days || [];
-    view.innerHTML = '<header><p class="eyebrow">ARO HCP / E2E cost reports</p><h1>E2E cost reports</h1>' +
-      '<p class="muted">Daily per-run amortized Azure cost for ARO HCP e2e builds across environments. Each day is collected a few days after it ends, once most billing has arrived.</p></header>' +
-      '<section class="panel" aria-label="Days">' + (days.length ? '<div class="table-wrap"><table><thead><tr><th>Day (UTC)</th><th>Runs</th><th>Incomplete</th><th>Net USD</th></tr></thead><tbody>' +
+    document.title = "E2E cost reports";
+    view.innerHTML = '<header><p class="eyebrow">ARO HCP / E2E cost reports</p><h1>' + (costs ? 'Azure cost and e2e runs' : 'E2E cost reports') + '</h1>' +
+      '<p class="muted">' + (costs
+        ? 'Amortized Azure spend across the ' + esc((costs.subscriptions || []).length) + ' charted subscriptions, with the rest of the month projected from the trailing daily average. The e2e runs that drove it are listed below.'
+        : 'Daily per-run amortized Azure cost for ARO HCP e2e builds across environments. Each day is collected a few days after it ends, once most billing has arrived.') + '</p></header>' +
+      (costs ? costsSummary(costs) + costsChartPanel(costs) + costsCoverage(costs, manifest) + costsDiagnostics(costs) : '') +
+      '<section class="panel" aria-label="Days"><h2>E2E runs by day</h2>' +
+      (days.length ? '<p class="muted">One row per UTC day. The table lists every e2e-parallel build that started that day with its attributed cost.</p><div class="table-wrap"><table><thead><tr><th>Day (UTC)</th><th>Runs</th><th>Incomplete</th><th>Net USD</th></tr></thead><tbody>' +
         days.map(d => '<tr><td><a href="?day=' + encodeURIComponent(d.day) + '">' + esc(d.day) + '</a></td><td>' + esc(d.runs) + '</td><td>' + esc(d.incomplete) + '</td><td class="money">' + usd2(d.netUSD) + '</td></tr>').join("") +
         '</tbody></table></div>' : '<p>No days published yet.</p>') + '</section>';
+    if (costs) initCosts(costs, manifest);
   };
 
   const renderDay = index => {
@@ -152,7 +356,17 @@
       if (!day) return unavailable("E2E cost reports", "No published days could be loaded (" + error.message + ").");
     }
     renderNav(manifest);
-    if (!day) return renderHome(manifest);
+    if (!day) {
+      let costs = null;
+      try {
+        costs = await fetchJSON("costs.json");
+      } catch (error) {
+        // The composite page is refreshed beside the day index; a missing or
+        // failed costs.json must not hide the published days.
+        costs = null;
+      }
+      return renderHome(manifest, costs);
+    }
     if (!validDay || (run && !validRun)) return unavailable("Report unavailable", "The requested day or run is not valid.");
     try {
       if (!run) return renderDay(await fetchJSON(day + "/index.json"));
